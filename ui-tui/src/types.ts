@@ -134,10 +134,18 @@ export interface ClarifyReq {
   answers?: Record<string, string>
 }
 
+/** A collapsed paste in a sent user message: the chip shown and the text the model got. */
+export interface PasteSection {
+  label: string
+  text: string
+}
+
 export interface Msg {
   info?: SessionInfo
   kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
+  /** Payloads behind this user row's paste chips, expandable in the transcript. */
+  pastes?: PasteSection[]
   role: Role
   text: string
   // Unix seconds the message was authored (persisted transcript timestamp on

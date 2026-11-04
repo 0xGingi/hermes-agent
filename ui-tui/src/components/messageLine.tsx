@@ -17,6 +17,7 @@ import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
+import { PasteSections } from './pasteSections.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
@@ -324,6 +325,12 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      {msg.role === 'user' && msg.pastes?.length ? (
+        <Box marginLeft={gutterWidth} width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>
+          <PasteSections pastes={msg.pastes} t={t} />
+        </Box>
+      ) : null}
     </Box>
   )
 })
