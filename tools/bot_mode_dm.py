@@ -243,9 +243,15 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err("target is required.")
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
     content = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), roster)} (@{_handle(me, roster)}): " + body
-    delivery = dict(task_id=task_id, agent=agent)
+    # Runtime-owned chain rules (hop cap, repeated ask, reply to a reply): agent/bot_chain.py (#137027).
+    from agent.bot_chain import admit_send
+    refusal, chain = admit_send(agent, raw_target, body)
+    if refusal:
+        return _err(refusal)
+    # A reply to the bot that messaged this turn goes notify-only: nothing wakes this bot for its answer.
+    delivery = dict(task_id=task_id, agent=agent, wake="none" if chain.get("expects_reply") is False else "notify")
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
-    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True}
+    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True, **chain}
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
@@ -301,7 +307,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any) -> Optional[str]:
+                        task_id: Optional[str], agent: Any, wake: str = "notify") -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
@@ -331,7 +337,8 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        raw = _spawn_delivery(waiter_command(root, envelope), label, delivery_id=envelope["id"], task_id=task_id, agent=agent)
+        raw = _spawn_delivery(waiter_command(root, envelope), label, delivery_id=envelope["id"], task_id=task_id,
+                              agent=agent, wake=wake)
         waiter_error = json.loads(raw).get("error")
         if not waiter_error:
             return raw
@@ -691,7 +698,7 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
 
 def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bool,
                     task_id: Optional[str], agent: Any, profile_home: Path | None = None,
-                    author: Optional[dict] = None) -> str:
+                    author: Optional[dict] = None, wake: str = "notify") -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
     dm_file = _write_dm_file(content)
     if profile_home is not None:
@@ -705,10 +712,12 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                 "evidence_file": dm_file})
         if record is not None:
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
-            notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
+            notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent, wake=wake))
             result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,
                           detail="Durably queued for the live Bot Chat owner. Do NOT wait or resend; finish your turn.")
-            if notification.get("error"):
+            if wake == "none" and not notification.get("error"):
+                result.update(expects_reply=False, detail=notification["detail"])
+            elif notification.get("error"):
                 result["notification_error"] = notification["error"]
             elif notification.get("process_id"):
                 result["process_id"] = notification["process_id"]
@@ -723,11 +732,11 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
     except BaseException:
         _unlink_dm_file(dm_file)
         raise
-    return _spawn_delivery(command, label, dm_file=dm_file, task_id=task_id, agent=agent)
+    return _spawn_delivery(command, label, dm_file=dm_file, task_id=task_id, agent=agent, wake=wake)
 
 
 def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, delivery_id: Optional[str] = None,
-                    task_id: Optional[str], agent: Any) -> str:
+                    task_id: Optional[str], agent: Any, wake: str = "notify") -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
     are owned/swept by ``tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
@@ -737,7 +746,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from tools.terminal_tool import terminal_tool
 
-        raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
+        raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
                             workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
                             _completion_output_chars=REPLY_COMPLETION_CHARS)
         try:
@@ -757,6 +766,11 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).
         transferred = True
+        if wake == "none":
+            return json.dumps({"status": "queued", "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file
+                               else ""), "to": label, "expects_reply": False, "process_id": proc_id,
+                               "detail": "Sent as a reply that needs no answer: nothing will wake you. Do not resend; "
+                                         "finish your turn."})
         if parsed.get("notify_on_complete") is False:
             # terminal_tool refused the completion promise: this session (api_server, one-shot
             # runner) cannot receive an async completion, so the recipient's reply would never
