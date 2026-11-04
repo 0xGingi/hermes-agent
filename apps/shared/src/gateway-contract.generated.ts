@@ -1644,6 +1644,8 @@ export interface RoomDriverStatus {
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
   max_rounds?: number | null
+  max_continues?: number | null
+  routing_modes?: string[] | null
   peer_routes: PeerRouteStatus[]
 }
 /** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
@@ -1665,7 +1667,7 @@ export interface PeerRouteStatus {
 export interface RoomContext {
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead'
+  routing?: 'everyone' | 'lead' | 'auto'
   lead_member_id?: string
 }
 export interface GroupsSendParams {
@@ -1695,7 +1697,7 @@ export interface GroupsContextParams {
   event_id: string
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead' | null
+  routing?: 'everyone' | 'lead' | 'auto' | null
   lead_member_id?: string | null
 }
 export interface GroupsContextResult {
@@ -1743,6 +1745,15 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+}
+export interface GroupsContinueParams {
+  profile?: string | null
+  room_id: string
+  discussion_event_id: string
+}
+export interface GroupsContinueResult {
+  continued?: boolean
+  event: RoomEvent
 }
 export interface GroupsApproveParams {
   profile?: string | null
@@ -6207,6 +6218,8 @@ export interface RpcMethods {
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Set one hosted room's purpose and shared notes; members see them from the next message. */
   'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
+  /** Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued. */
+  'groups.continue': { params: GroupsContinueParams; result: GroupsContinueResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6664,6 +6677,7 @@ export const RPC_METHODS = [
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.context',
+  'groups.continue',
   'groups.create',
   'groups.demote',
   'groups.disband',
